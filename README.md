@@ -1,4 +1,4 @@
-# xmos-libcore
+# gramarye-libcore
 
 Shared Library Repo based off of [C Interfaces and Implementations](https://github.com/drh/cii).
 
@@ -20,8 +20,8 @@ Contains extentions like hash algorithims for different datatypes. Putting it in
 ```
 include(FetchContent)
 FetchContent_Declare(
-    libcore
-    GIT_REPOSITORY "https://github.com/yourusername/libcore.git"
+    gramarye
+    GIT_REPOSITORY "https://github.com/yourusername/gramarye-libcore.git"
     GIT_TAG "v1.0.0"
 )
 FetchContent_MakeAvailable(libcore)

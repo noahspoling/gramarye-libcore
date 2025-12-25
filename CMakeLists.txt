@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.27)
-project(xmos-libcore C)
+project(gramarye-libcore C)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
@@ -45,13 +45,13 @@ message(STATUS "SRC_FILES: ${SRC_FILES}
                 PLATFORM_FILES: ${PLATFORM_FILES}")
 
 # Create library
-add_library(xmos-libcore 
+add_library(gramarye-libcore 
     ${SRC_FILES}
     ${PLATFORM_SOURCES}
 )
 
 # Add include directory for hash headers
-target_include_directories(xmos-libcore PUBLIC
+target_include_directories(gramarye-libcore PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include/hash>
     $<INSTALL_INTERFACE:include>
@@ -59,7 +59,7 @@ target_include_directories(xmos-libcore PUBLIC
 
 # Export for CMake
 include(GNUInstallDirs)
-install(TARGETS xmos-libcore
+install(TARGETS gramarye-libcore
     EXPORT coreTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -68,12 +68,12 @@ install(TARGETS xmos-libcore
 
 install(EXPORT coreTargets
     FILE coreTargets.cmake
-    NAMESPACE xmos-libcore::
+    NAMESPACE gramarye-libcore::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/core
 )
 
 # For FetchContent compatibility - create an interface target
 # This allows the library to work both when installed and when used via FetchContent
-if(NOT TARGET xmos-libcore::xmos-libcore)
-    add_library(xmos-libcore::xmos-libcore ALIAS xmos-libcore)
+if(NOT TARGET gramarye-libcore::gramarye-libcore)
+    add_library(gramarye-libcore::gramarye-libcore ALIAS gramarye-libcore)
 endif()
