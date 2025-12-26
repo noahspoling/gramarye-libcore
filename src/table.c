@@ -111,7 +111,6 @@ void Table_map(T table,
 }
 
 void *Table_remove(T table, const void *key) {
-    TraceLog(LOG_INFO, "Removing key from table");
     int i;
     struct binding **pp;
     assert(table);
