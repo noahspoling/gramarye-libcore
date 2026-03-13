@@ -4,7 +4,6 @@ static char rcsid[] = "$Id$";
 #include "mem.h"
 #include "assert.h"
 #include "table.h"
-#include "raylib.h"
 
 #define T Table_T
 
