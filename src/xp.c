@@ -153,7 +153,7 @@ int XP_div(int n, T q, T x, int m, T y, T r, T tmp) {
 			q[k] = qk;
 			{
 				int borrow;
-				assert(0 <= k && k <= k+m);
+				assert(0 <= k && m >= 0);
 				borrow = XP_sub(m + 1, &rem[k], &rem[k], dq, 0);
 				assert(borrow == 0);
 			}
