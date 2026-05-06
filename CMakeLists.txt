@@ -47,7 +47,10 @@ add_library(gramarye-libcore
 )
 
 if(GRAMARYE_THREADING)
-    if(NOT WIN32)
+    if(WIN32)
+        target_sources(gramarye-libcore PRIVATE src/platform/win/thread-nt.c)
+    else()
+        target_sources(gramarye-libcore PRIVATE src/platform/unix/thread.c)
         find_package(Threads REQUIRED)
         target_link_libraries(gramarye-libcore PUBLIC Threads::Threads)
     endif()
