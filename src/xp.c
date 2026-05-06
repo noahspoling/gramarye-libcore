@@ -133,7 +133,7 @@ int XP_div(int n, T q, T x, int m, T y, T r, T tmp) {
 			int qk;
 			{
 				int i;
-				assert(2 <= m && m <= k+m && k+m <= n);
+				assert(2 <= m && 0 <= k && k <= n - m);
 				{
 					int km = k + m;
 					unsigned long y2 = y[m-1]*BASE + y[m-2];
