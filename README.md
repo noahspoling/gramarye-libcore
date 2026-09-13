@@ -19,6 +19,9 @@ gramarye-libcore provides fundamental data structures and utilities used through
 - **Stack**: Stack data structure
 - **Seq**: Sequence (dynamic array with high/low operations)
 - **Ring**: Ring buffer
+- **Heap**: Binary heap / priority queue with value semantics (fixed-size elements, custom comparator)
+- **UFind**: Union-find / disjoint set over 0..n-1 (path halving, union by size) for connected components
+- **KDTree**: Static k-d tree over n-dimensional float points; nearest-K and radius queries (e.g. scattered-field interpolation, proximity queries)
 - **Arena**: Memory arena for efficient allocation/deallocation
 
 ### Utilities

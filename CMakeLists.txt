@@ -101,3 +101,35 @@ install(EXPORT coreTargets
 if(NOT TARGET gramarye-libcore::gramarye-libcore)
     add_library(gramarye-libcore::gramarye-libcore ALIAS gramarye-libcore)
 endif()
+
+# Tests
+option(BUILD_TESTS "Build tests" ON)
+
+if(BUILD_TESTS)
+    # Test source files
+    file(GLOB TEST_SRC_FILES
+        "tests/*.c"
+    )
+
+    # Remove test_runner.c from test sources (it's the main)
+    list(FILTER TEST_SRC_FILES EXCLUDE REGEX ".*test_runner\\.c$")
+
+    # Create test executable
+    add_executable(libcore_tests
+        tests/test_runner.c
+        ${TEST_SRC_FILES}
+    )
+
+    # Link against gramarye-libcore (pulls in Threads::Threads transitively
+    # when GRAMARYE_THREADING is ON, since that link is PUBLIC above)
+    target_link_libraries(libcore_tests PRIVATE
+        gramarye-libcore
+    )
+
+    # Include directories
+    target_include_directories(libcore_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/include/hash
+    )
+endif()
