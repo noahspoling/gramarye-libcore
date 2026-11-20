@@ -3,6 +3,9 @@ static char rcsid[] = "$Id$" "\n$Id$";
 #include <stdio.h>
 #include "assert.h"
 #include "except.h"
+#ifdef WIN32
+#include <windows.h>   /* TlsAlloc / TlsGetValue / TlsSetValue */
+#endif
 #define T Except_T
 Except_Frame *Except_stack = NULL;
 void Except_raise(const T *e, const char *file,

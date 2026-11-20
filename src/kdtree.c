@@ -126,7 +126,8 @@ static void knn_insert(Cand *cands, int *count, int k, int idx, float d2) {
 }
 
 static void knn_recurse(T t, const float *q, int node, Cand *cands, int *count, int k) {
-	int p, axis, near, far;
+	/* not near/far: windows.h defines both as empty macros */
+	int p, axis, near_child, far_child;
 	float diff;
 	if (node < 0) return;
 	p = t->pidx[node];
@@ -134,14 +135,14 @@ static void knn_recurse(T t, const float *q, int node, Cand *cands, int *count, 
 
 	axis = t->ax[node];
 	diff = q[axis] - COORD(t, p, axis);
-	near = diff < 0.0f ? t->left[node] : t->right[node];
-	far  = diff < 0.0f ? t->right[node] : t->left[node];
-	knn_recurse(t, q, near, cands, count, k);
+	near_child = diff < 0.0f ? t->left[node] : t->right[node];
+	far_child  = diff < 0.0f ? t->right[node] : t->left[node];
+	knn_recurse(t, q, near_child, cands, count, k);
 	/* Only the far side can hold anything closer than what we already have
 	   if the split plane itself is nearer than our current worst kept
 	   candidate -- standard kd-tree pruning. */
 	if (*count < k || diff * diff < cands[*count - 1].d2)
-		knn_recurse(t, q, far, cands, count, k);
+		knn_recurse(t, q, far_child, cands, count, k);
 }
 
 int KDTree_nearest(T t, const float *query, int k, int *out_idx, float *out_dist2) {

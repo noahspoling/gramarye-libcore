@@ -1,7 +1,21 @@
 #ifndef GRAMARYE_SYNC_H
 #define GRAMARYE_SYNC_H
 
-#if defined(_WIN32)
+#if defined(GRAMARYE_SYNC_SINGLE_THREADED)
+/* No native headers: nothing below uses them, and keeping windows.h out of
+   every consumer avoids its clash with raylib. */
+#elif defined(_WIN32)
+/* NOGDI/NOUSER keep Rectangle, CloseWindow, ShowCursor... undeclared so
+   raylib users still compile. CRITICAL_SECTION/SRWLOCK aren't affected. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#ifndef NOUSER
+#define NOUSER
+#endif
 #include <windows.h>
 #else
 #include <pthread.h>

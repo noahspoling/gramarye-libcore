@@ -20,8 +20,8 @@ extern Except_Frame *Except_stack;
 extern const Except_T Assert_Failed;
 void Except_raise(const T *e, const char *file,int line);
 #ifdef WIN32
-#include <windows.h>
-
+/* windows.h stays in except.c: this header reaches every consumer, and
+   windows.h clashes with raylib (Rectangle, CloseWindow, ShowCursor). */
 extern int Except_index;
 extern void Except_init(void);
 extern void Except_push(Except_Frame *fp);

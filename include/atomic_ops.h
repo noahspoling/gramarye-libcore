@@ -3,7 +3,17 @@
 
 #include <stdint.h>
 
-#if defined(_MSC_VER) || defined(GRAMARYE_ATOMICS_MSVC)
+#if (defined(_MSC_VER) || defined(GRAMARYE_ATOMICS_MSVC)) && !defined(GRAMARYE_ATOMICS_SINGLE)
+/* See sync.h: NOGDI/NOUSER avoid windows.h's clash with raylib. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#ifndef NOUSER
+#define NOUSER
+#endif
 #include <windows.h>
 #endif
 

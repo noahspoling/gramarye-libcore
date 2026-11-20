@@ -1,6 +1,7 @@
 static char rcsid[] = "$Id$";
 #include <limits.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "mem.h"
 #include "assert.h"
 #include "arith.h"
@@ -21,7 +22,7 @@ static int cmpatom(const void *x, const void *y) {
 	return x != y;
 }
 static unsigned hashatom(const void *x) {
-	return (unsigned long)x>>2;
+	return (unsigned)((uintptr_t)x>>2);
 }
 static T copy(T t, int hint) {
 	T set;

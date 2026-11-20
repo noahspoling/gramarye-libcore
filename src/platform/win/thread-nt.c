@@ -1,10 +1,29 @@
-#include <stdio.h>
+// Windows implementation of the CII Thread/Sem interfaces.
+//
+// Same semantics as src/platform/unix/thread.c (the pthread backend), so code
+// and tests behave identically on both platforms:
+//   - each thread finds its own Thread_T through thread-local storage, set by
+//     the thread itself before it runs anything (no lookup table, so no race
+//     between a new thread starting and its creator registering it);
+//   - a finished thread's record and exit code survive until it is joined;
+//   - Thread_init may be called more than once (each call installs a fresh
+//     handle for the calling thread);
+//   - Thread_join(NULL) returns 0 immediately;
+//   - Thread_alert interrupts Thread_join and Sem_wait, which then raise
+//     Thread_Alerted in the waiting thread.
+//
+// Waits use WaitForMultipleObjects on {the thing being waited for, the
+// waiter's own alert event}, so an alert can never be missed between checking
+// the flag and starting to wait.
+
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <limits.h>
 #include <windows.h>
 #include <process.h>
+
 #include "assert.h"
+#include "except.h"
 #include "mem.h"
 #include "thread.h"
 #include "sem.h"
@@ -12,302 +31,215 @@
 static char rcsid[] = "$Id$";
 
 #define T Thread_T
+
 struct T {
-	DWORD IDThread;		/* Win 32 thread identifier */
-	T handle;		/* self pointer */
-	int code;		/* exit code */
-	HANDLE join;		/* join semaphore */
-	T joinlist;		/* threads waiting on join */
-	T link;			/* next thread on this join list */
-	T next;			/* next thread on this hash chain */
-	int alerted;		/* 1 if this thread has been alerted */
-	int (*apply)(void *);	/* initial function for this thread */
-	void *args;		/* argument for apply */
+    T        handle;      // self pointer; NULL once joined
+    HANDLE   thread;      // OS thread handle; NULL for a Thread_init (root) handle
+    HANDLE   alert;       // auto-reset event, set by Thread_alert
+    volatile LONG alerted;// 1 if this thread has been alerted
+    int      code;        // exit code, valid once `thread` is signaled
+    int      joined;      // only one joiner (matches the pthread backend)
+    int    (*apply)(void *);
+    void    *args;
 };
 
 const Except_T Thread_Alerted = { "Thread alerted" };
 const Except_T Thread_Failed  = { "Thread creation failed" };
 
-static T allthreads[317];
-#define HASH(id) ((int)((id)%(sizeof allthreads/sizeof allthreads[0])))
-static int nthreads;		/* number of threads in allthreads */
-static T root;
-static HANDLE join0;		/* Thread_join(NULL) semaphore */
-static int join0count;		/* number of threads waiting on join0; always 0 or 1 */
+/* ---- Thread-local "self" ---------------------------------------------------- */
 
-static int critical;
-static CRITICAL_SECTION csection;
-#define ENTERCRITICAL EnterCriticalSection(&csection); assert(critical == 0); critical++
-#define LEAVECRITICAL   critical--; assert(critical == 0); LeaveCriticalSection(&csection)
+static DWORD     self_index = TLS_OUT_OF_INDEXES;
+static INIT_ONCE self_once  = INIT_ONCE_STATIC_INIT;
 
-static T getThreadByID(DWORD id) {
-	T t;
-
-	ENTERCRITICAL;
-	for (t = allthreads[HASH(id)]; t != NULL; t = t->next)
-		if (t->IDThread == id)
-			break;
-	LEAVECRITICAL;
-	assert(t);
-	return t;
+static BOOL CALLBACK make_self_index(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once; (void)param; (void)ctx;
+    self_index = TlsAlloc();
+    return self_index != TLS_OUT_OF_INDEXES;
 }
 
-/* removeThread - must be called from within a critical region */
-static void removeThread(T t) {
-	T *q;
-
-	q = &allthreads[HASH(t->IDThread)];
-	for ( ; *q != NULL && *q != t; q = &(*q)->next)
-		;
-	assert(*q == t);
-	*q = t->next;
-	nthreads--;
-	t->handle = NULL;
+static T self_get(void) {
+    if (!InitOnceExecuteOnce(&self_once, make_self_index, NULL, NULL)) return NULL;
+    return (T)TlsGetValue(self_index);
 }
 
-static void addThread(T t) {
-	T *q;
-
-	ENTERCRITICAL;
-	q = &allthreads[HASH(t->IDThread)];
-	t->next = *q;
-	*q = t;
-	nthreads++;
-	t->handle = t;
-	LEAVECRITICAL;
+static void self_set(T t) {
+    if (InitOnceExecuteOnce(&self_once, make_self_index, NULL, NULL)) {
+        TlsSetValue(self_index, t);
+    }
 }
 
-static void testalert(T t) {
-	ENTERCRITICAL;
-	if (t->alerted) {
-		t->alerted = 0;
-		LEAVECRITICAL;
-		RAISE(Thread_Alerted);
-	}
-	LEAVECRITICAL;
+/* ---- Alerts ---------------------------------------------------------------- */
+
+static void testalert(T current) {
+    if (current && InterlockedExchange(&current->alerted, 0)) {
+        RAISE(Thread_Alerted);
+    }
+}
+
+// Waits for `object` to be signaled while staying interruptible by an alert
+// on the calling thread. Returns normally once `object` is signaled.
+static void wait_alertable(T current, HANDLE object) {
+    HANDLE handles[2] = { object, current->alert };
+    for (;;) {
+        DWORD r = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        assert(r != WAIT_FAILED);
+        if (r == WAIT_OBJECT_0) return;
+        testalert(current);   // raises if alerted; a stale event just loops
+    }
+}
+
+static T new_handle(size_t extra) {
+    T t;
+    TRY
+        t = ALLOC((sizeof(*t) + extra + 15) & ~(size_t)15);
+        memset(t, 0, sizeof(*t));
+    EXCEPT(Mem_Failed)
+        RAISE(Thread_Failed);
+    END_TRY;
+    t->alert = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (t->alert == NULL) {
+        FREE(t);
+        RAISE(Thread_Failed);
+    }
+    t->handle = t;
+    return t;
+}
+
+/* ---- Threads ----------------------------------------------------------------- */
+
+static unsigned __stdcall start(void *p) {
+    T t = (T)p;
+    self_set(t);
+    // CII exceptions keep a per-thread handler stack in TLS (except.c).
+    if (Except_index == -1)
+        Except_init();
+    TlsSetValue(Except_index, NULL);
+
+    t->code = t->apply ? t->apply(t->args) : 0;
+    return (unsigned)t->code;
 }
 
 int Thread_init(int preempt, ...) {
-	assert(preempt == 0 || preempt == 1);
-	assert(root == NULL);
-	TRY
-		NEW0(root);
-	EXCEPT(Mem_Failed)
-		return -1;
-	END_TRY;
-	join0 = CreateSemaphore(NULL, 0, 1, NULL);
-	if (join0 == NULL)
-		return -1;
-	root->join = CreateSemaphore(NULL, 0, INT_MAX, NULL);
-	if (root->join == NULL) {
-		BOOL result = CloseHandle(join0);
-		assert(result == TRUE);
-		return -1;
-	}
-	InitializeCriticalSection(&csection);
-	root->IDThread = GetCurrentThreadId();
-	addThread(root);
-	/* handle preempt == 0 */
-	return 1;
+    (void)preempt;   // preemption is the OS scheduler's job in this backend
+    T root;
+    TRY
+        root = new_handle(0);
+    EXCEPT(Thread_Failed)
+        return -1;
+    END_TRY;
+    self_set(root);
+    return 1;
 }
 
 T Thread_self(void) {
-	assert(root);
-	return getThreadByID(GetCurrentThreadId());
+    T t = self_get();
+    assert(t);
+    return t;
 }
 
 void Thread_pause(void) {
-	assert(root);
-	Sleep(0);
-}
-
-int Thread_join(T t) {
-	T current = Thread_self();
-
-	assert(root);
-	assert(t != current);
-	testalert(current);
-	if (t != NULL) {
-		ENTERCRITICAL;
-		if (t->handle == t) {
-			HANDLE join = t->join;
-			DWORD result;
-			assert(current->link == NULL);
-			current->link = t->joinlist;
-			t->joinlist = current;
-			LEAVECRITICAL;
-			result = WaitForSingleObject(join, INFINITE);
-			assert(result != WAIT_FAILED);
-			testalert(current);
-			return current->code;
-		} else {
-			LEAVECRITICAL;
-			return -1;
-		}
-	}
-	ENTERCRITICAL;
-	if (nthreads > 1) {
-		DWORD result;
-		assert(join0count == 0);
-		join0count++;
-		LEAVECRITICAL;
-		result = WaitForSingleObject(join0, INFINITE);
-		assert(result != WAIT_FAILED);
-		ENTERCRITICAL;
-		join0count--;
-		LEAVECRITICAL;
-		testalert(current);
-	} else {
-		assert(join0count == 0);
-		LEAVECRITICAL;
-		return 0;
-	}
-}
-
-void Thread_exit(int code) {
-	BOOL result;
-	T current = Thread_self();
-
-	ENTERCRITICAL;
-	removeThread(current);
-	if (current->joinlist != NULL) {
-		T t, n;
-		int count = 0;
-		assert(current->join);
-		for (t = current->joinlist; t != NULL; t = n) {
-			t->code = code;
-			n = t->link;
-			t->link = NULL;
-			count++;
-		}
-		current->joinlist = NULL;
-		result = ReleaseSemaphore(current->join, count, NULL);
-		assert(result == TRUE);
-	}
-	result = CloseHandle(current->join);
-	assert(result == TRUE);
-	current->join = NULL;
-	if (join0count > 0 && nthreads == 1) {
-		assert(join0count == 1);
-		result = ReleaseSemaphore(join0, 1, NULL);
-		assert(result == TRUE);
-	}
-	if (nthreads == 0) {
-		result = CloseHandle(join0);
-		assert(result == TRUE);
-	}
-	FREE(current);
-	LEAVECRITICAL;
-	_endthreadex(code);
+    SwitchToThread();
 }
 
 void Thread_alert(T t) {
-	assert(root);
-	ENTERCRITICAL;
-	assert(t && t->handle == t);
-	t->alerted = 1;
-	LEAVECRITICAL;
+    assert(t && t->handle == t);
+    InterlockedExchange(&t->alerted, 1);
+    SetEvent(t->alert);
 }
 
-static unsigned __stdcall start(void *p) {
-	T t = p;
+int Thread_join(T t) {
+    T current = Thread_self();
+    assert(t != current);
+    testalert(current);
 
-	if (Except_index == -1)
-		Except_init();
-	TlsSetValue(Except_index, NULL);
-	Thread_exit((*t->apply)(t->args));
-	return 0;
+    if (t == NULL) return 0;   // no registry of all threads (matches pthread backend)
+    if (t->handle != t || t->joined || t->thread == NULL) return -1;
+    t->joined = 1;
+
+    wait_alertable(current, t->thread);
+
+    int code = t->code;        // written by the thread before its handle signaled
+    CloseHandle(t->thread);
+    CloseHandle(t->alert);
+    t->handle = NULL;
+    FREE(t);
+
+    testalert(current);
+    return code;
 }
 
 T Thread_new(int apply(void *), void *args, int nbytes, ...) {
-	T t;
-	HANDLE hThread;
+    (void)Thread_self();       // the creator must have an identity (Thread_init)
+    assert(apply);
+    assert((args && nbytes >= 0) || args == NULL);
+    if (args == NULL) nbytes = 0;
 
-	assert(root);
-	assert(apply);
-	assert(args && nbytes >= 0 || args == NULL);
-	if (args == NULL)
-		nbytes = 0;
-	TRY
-		t = ALLOC((sizeof (*t) + nbytes + 15)&~15);
-		memset(t, '\0', sizeof *t);
-	EXCEPT(Mem_Failed)
-		RAISE(Thread_Failed);
-	END_TRY;
-	t->join = CreateSemaphore(NULL, 0, INT_MAX, NULL);
-	if (t->join == NULL) {
-		FREE(t);
-		RAISE(Thread_Failed);
-	}
-	if (nbytes > 0) {
-		t->args = t + 1;
-		memcpy(t->args, args, nbytes);
-	} else
-		t->args = args;
-	t->apply = apply;
-	hThread = (HANDLE)_beginthreadex(
-		NULL,		/* default security attributes */
-		0,		/* default stack size */
-		start,		/* initial function */
-		t,		/* start's argument */
-		0,		/* default thread creation flags */
-		&t->IDThread	/* where to store the thread id */
-		);
-	if (hThread == NULL) {
-		CloseHandle(t->join);
-		FREE(t);
-		RAISE(Thread_Failed);
-	}
-	CloseHandle(hThread);
-	addThread(t);
-	return t;
+    T t = new_handle((size_t)nbytes);
+    t->apply = apply;
+    if (nbytes > 0) {
+        t->args = (void *)(t + 1);
+        memcpy(t->args, args, (size_t)nbytes);
+    } else {
+        t->args = args;
+    }
+
+    // Fully initialized before the thread exists; the thread sets its own
+    // TLS self in start(), so there is nothing left to race on.
+    t->thread = (HANDLE)_beginthreadex(NULL, 0, start, t, 0, NULL);
+    if (t->thread == NULL) {
+        CloseHandle(t->alert);
+        FREE(t);
+        RAISE(Thread_Failed);
+    }
+    return t;
 }
+
+void Thread_exit(int code) {
+    T t = Thread_self();
+    t->code = code;
+    _endthreadex((unsigned)code);
+}
+
 #undef T
 
-#define T Sem_T
-T *Sem_new(int count) {
-	T *s;
+/* ---- Semaphores (Sem_T) on a native Win32 semaphore ------------------------- */
 
-	NEW(s);
-	Sem_init(s, count);
-	return s;
+#define T Sem_T
+
+T *Sem_new(int count) {
+    T *s;
+    NEW(s);
+    Sem_init(s, count);
+    return s;
 }
 
+// s->count is the initial count only; the live count is inside the native
+// semaphore (Windows has no race-free way to read it).
 void Sem_init(T *s, int count) {
-	assert(root);
-	assert(s);
-	assert(count >= 0);
-	s->count = 0;
-	s->queue = CreateSemaphore(NULL, count, INT_MAX, NULL);
-	assert(s->queue);
+    assert(s);
+    assert(count >= 0);
+    s->count = count;
+    s->queue = CreateSemaphore(NULL, count, INT_MAX, NULL);
+    assert(s->queue);
 }
 
 void Sem_wait(T *s) {
-	DWORD result;
-	Thread_T current = Thread_self();
-
-	assert(s);
-	testalert(current);
-	result = WaitForSingleObject(s->queue, INFINITE);
-	assert(result != WAIT_FAILED);
-	ENTERCRITICAL;
-	if (current->alerted) {
-		BOOL result;
-		current->alerted = 0;
-		LEAVECRITICAL;
-		result = ReleaseSemaphore(s->queue, 1, NULL);
-		assert(result == TRUE);
-		RAISE(Thread_Alerted);
-	}
-	LEAVECRITICAL;
+    assert(s && s->queue);
+    Thread_T current = Thread_self();
+    testalert(current);
+    wait_alertable(current, (HANDLE)s->queue);
+    // Alerted while acquiring: hand the unit back so it isn't lost, then raise.
+    if (InterlockedExchange(&current->alerted, 0)) {
+        ReleaseSemaphore((HANDLE)s->queue, 1, NULL);
+        RAISE(Thread_Alerted);
+    }
 }
 
 void Sem_signal(T *s) {
-	BOOL result;
-
-	assert(root);
-	assert(s);
-	result = ReleaseSemaphore(s->queue, 1, NULL);
-	assert(result == TRUE);
+    assert(s && s->queue);
+    BOOL ok = ReleaseSemaphore((HANDLE)s->queue, 1, NULL);
+    assert(ok);
+    (void)ok;
 }
+
 #undef T

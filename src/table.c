@@ -1,6 +1,7 @@
 static char rcsid[] = "$Id$";
 #include <limits.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "mem.h"
 #include "assert.h"
 #include "table.h"
@@ -25,7 +26,7 @@ static int cmpatom(const void *x, const void *y) {
 }
 
 static unsigned hashatom(const void *key) {
-    return (unsigned long)key>>2;
+    return (unsigned)((uintptr_t)key>>2);
 }
 
 T Table_new(int hint,

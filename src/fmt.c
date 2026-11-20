@@ -4,6 +4,7 @@ static char rcsid[] = "$Id$";
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
+#include <stdint.h>
 #include <float.h>
 #include <ctype.h>
 #include <math.h>
@@ -88,7 +89,8 @@ static void cvt_x(int code, va_list_box *box,
 static void cvt_p(int code, va_list_box *box,
 	int put(int c, void *cl), void *cl,
 	unsigned char flags[], int width, int precision) {
-	unsigned long m = (unsigned long)va_arg(box->ap, void*);
+	/* uintptr_t, not unsigned long: long is 32-bit on 64-bit Windows */
+	uintptr_t m = (uintptr_t)va_arg(box->ap, void*);
 	char buf[43];
 	char *p = buf + sizeof buf;
 	precision = INT_MIN;
